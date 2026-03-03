@@ -38,7 +38,7 @@ export default function CooldownTimer() {
     const isReady = timeLeft === 0;
 
     return (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 pointer-events-none flex flex-col items-center gap-2">
             <div
                 className={clsx(
                     "px-6 py-3 rounded-lg font-pixel text-2xl border text-center pointer-events-auto transition-colors shadow-lg",
@@ -48,6 +48,9 @@ export default function CooldownTimer() {
                 )}
             >
                 {isReady ? "READY TO DRAW" : `COOLDOWN: ${timeLeft}s`}
+            </div>
+            <div className="font-pixel text-lg text-neon-blue opacity-80 neon-text pointer-events-auto cursor-default">
+                MADE BY DEVX
             </div>
         </div>
     );
