@@ -21,17 +21,26 @@ export default function InfiniteCanvas() {
     // Firestore Viewport Tracking
     const lastQueryBounds = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null);
 
+    // Track window size for correct bounds querying
+    const [windowSize, setWindowSize] = useState({
+        width: typeof window !== "undefined" ? window.innerWidth : 1000,
+        height: typeof window !== "undefined" ? window.innerHeight : 1000
+    });
+
+    useEffect(() => {
+        const handleResize = () => setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+        window.addEventListener("resize", handleResize);
+        return () => window.removeEventListener("resize", handleResize);
+    }, []);
+
     // Sync with Firestore based on viewport
     useEffect(() => {
-        // Determine current bounds
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
         const scale = transform.scale;
-        const minX = Math.floor((- (canvas.width / 2 + transform.x)) / (PIXEL_SIZE * scale));
-        const maxX = Math.ceil((canvas.width - (canvas.width / 2 + transform.x)) / (PIXEL_SIZE * scale));
-        const minY = Math.floor((- (canvas.height / 2 + transform.y)) / (PIXEL_SIZE * scale));
-        const maxY = Math.ceil((canvas.height - (canvas.height / 2 + transform.y)) / (PIXEL_SIZE * scale));
+        // Adding generous padding (+/- 30 units) to avoid edges popping in
+        const minX = Math.floor((- (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) - 30;
+        const maxX = Math.ceil((windowSize.width - (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) + 30;
+        const minY = Math.floor((- (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) - 30;
+        const maxY = Math.ceil((windowSize.height - (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) + 30;
 
         // Simple debouncing/chunking: only re-query if bounds changed significantly (e.g. by 10 pixels)
         if (lastQueryBounds.current) {
@@ -64,10 +73,12 @@ export default function InfiniteCanvas() {
                 }
             });
             updatePixels(newPixels);
+        }, (error) => {
+            console.error("Firestore Error:", error);
         });
 
         return () => unsubscribe();
-    }, [transform, updatePixels]);
+    }, [transform, windowSize, updatePixels]);
 
     // Draw loop
     const draw = useCallback(() => {
@@ -188,6 +199,10 @@ export default function InfiniteCanvas() {
                 }
             }
 
+            // Optimistic Cooldown Apply
+            localStorage.setItem("lastPixelPlacedAt", Date.now().toString());
+            window.dispatchEvent(new Event("pixelPlaced"));
+
             // Firestore Write
             try {
                 const docId = `${gridX}_${gridY}`;
@@ -197,11 +212,13 @@ export default function InfiniteCanvas() {
                     color: selectedColor,
                     updatedAt: serverTimestamp()
                 });
-
-                localStorage.setItem("lastPixelPlacedAt", Date.now().toString());
-                window.dispatchEvent(new Event("pixelPlaced"));
-            } catch (err) {
+            } catch (err: unknown) {
                 console.error("Failed to place pixel:", err);
+                const message = err instanceof Error ? err.message : "Unknown error";
+                alert("Could not place pixel (check internet or Firestore rules). " + message);
+                // Revert cooldown on failure
+                localStorage.removeItem("lastPixelPlacedAt");
+                window.dispatchEvent(new Event("pixelPlaced"));
             }
         }
     };
