@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useCanvasStore, PixelData } from "@/store/useCanvasStore";
 import { COOLDOWN_MS } from "@/components/CooldownTimer";
 import { db } from "@/lib/firebase";
@@ -18,9 +18,6 @@ export default function InfiniteCanvas() {
 
     const { pixels, selectedColor, updatePixels } = useCanvasStore();
 
-    // Firestore Viewport Tracking
-    const lastQueryBounds = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null);
-
     // Track window size for correct bounds querying
     const [windowSize, setWindowSize] = useState({
         width: typeof window !== "undefined" ? window.innerWidth : 1000,
@@ -33,41 +30,43 @@ export default function InfiniteCanvas() {
         return () => window.removeEventListener("resize", handleResize);
     }, []);
 
-    // Sync with Firestore based on viewport
+    // Track bounds as simple state, updated in a debounced way inside an effect
+    const scale = transform.scale;
+    const computedMinX = Math.floor((- (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) - 30;
+    const computedMaxX = Math.ceil((windowSize.width - (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) + 30;
+    const computedMinY = Math.floor((- (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) - 30;
+    const computedMaxY = Math.ceil((windowSize.height - (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) + 30;
+
+    const [bounds, setBounds] = useState({ minX: -50, maxX: 50, minY: -50, maxY: 50 });
+
     useEffect(() => {
-        const scale = transform.scale;
-        // Adding generous padding (+/- 30 units) to avoid edges popping in
-        const minX = Math.floor((- (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) - 30;
-        const maxX = Math.ceil((windowSize.width - (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) + 30;
-        const minY = Math.floor((- (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) - 30;
-        const maxY = Math.ceil((windowSize.height - (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) + 30;
+        // use a timeout to ensure we don't set state synchronously during render cycle
+        const t = setTimeout(() => {
+            setBounds(prev => {
+                if (Math.abs(computedMinX - prev.minX) < 10 && Math.abs(computedMaxX - prev.maxX) < 10 &&
+                    Math.abs(computedMinY - prev.minY) < 10 && Math.abs(computedMaxY - prev.maxY) < 10) {
+                    return prev;
+                }
+                return { minX: computedMinX, maxX: computedMaxX, minY: computedMinY, maxY: computedMaxY };
+            });
+        }, 50);
+        return () => clearTimeout(t);
+    }, [computedMinX, computedMaxX, computedMinY, computedMaxY]);
 
-        // Simple debouncing/chunking: only re-query if bounds changed significantly (e.g. by 10 pixels)
-        if (lastQueryBounds.current) {
-            const b = lastQueryBounds.current;
-            if (Math.abs(minX - b.minX) < 5 && Math.abs(maxX - b.maxX) < 5 &&
-                Math.abs(minY - b.minY) < 5 && Math.abs(maxY - b.maxY) < 5) {
-                return;
-            }
-        }
-        lastQueryBounds.current = { minX, maxX, minY, maxY };
+    useEffect(() => {
+        const { minX, maxX, minY, maxY } = bounds;
 
-        // Firestore Query
-        // Note: Firestore multiple inequality filter limitation.
-        // We'll query X range and filter Y in memory for simplicity, or just query with a limit for now.
-        // For a real production app, we'd use geohashing or chunks.
         const q = query(
             collection(db, "pixels"),
             where("x", ">=", minX),
             where("x", "<=", maxX),
-            limit(1000) // Safety limit
+            limit(1000)
         );
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const newPixels: PixelData[] = [];
             snapshot.forEach((doc) => {
                 const data = doc.data() as PixelData;
-                // Manual Y filtering
                 if (data.y >= minY && data.y <= maxY) {
                     newPixels.push(data);
                 }
@@ -78,7 +77,7 @@ export default function InfiniteCanvas() {
         });
 
         return () => unsubscribe();
-    }, [transform, windowSize, updatePixels]);
+    }, [bounds, updatePixels]);
 
     // Draw loop
     const draw = useCallback(() => {
@@ -167,17 +166,13 @@ export default function InfiniteCanvas() {
     };
 
     const handlePointerDown = async (e: React.PointerEvent<HTMLCanvasElement>) => {
-        // Left click = index 0. Check if user is trying to place pixel vs pan
-        // If shift key or middle mouse, they want to pan. Let's make right click or middle click for pan, left click for pixel placement.
         if (e.button === 1 || e.button === 2 || e.shiftKey) {
             setIsDragging(true);
             lastMousePos.current = { x: e.clientX, y: e.clientY };
         } else if (e.button === 0) {
-            // Placed pixel
             const canvas = canvasRef.current;
             if (!canvas) return;
 
-            // Unproject screen coordinates to world coordinates
             const scale = transform.scale;
             const rect = canvas.getBoundingClientRect();
             const clickX = e.clientX - rect.left;
@@ -189,21 +184,17 @@ export default function InfiniteCanvas() {
             const gridX = Math.floor(worldX / PIXEL_SIZE);
             const gridY = Math.floor(worldY / PIXEL_SIZE);
 
-            // Check Cooldown
             const storedTime = localStorage.getItem("lastPixelPlacedAt");
             if (storedTime) {
                 const timePassed = Date.now() - parseInt(storedTime, 10);
                 if (timePassed < COOLDOWN_MS) {
-                    // Cannot place pixel yet
                     return;
                 }
             }
 
-            // Optimistic Cooldown Apply
             localStorage.setItem("lastPixelPlacedAt", Date.now().toString());
             window.dispatchEvent(new Event("pixelPlaced"));
 
-            // Firestore Write
             try {
                 const docId = `${gridX}_${gridY}`;
                 await setDoc(doc(db, "pixels", docId), {
@@ -216,7 +207,6 @@ export default function InfiniteCanvas() {
                 console.error("Failed to place pixel:", err);
                 const message = err instanceof Error ? err.message : "Unknown error";
                 alert("Could not place pixel (check internet or Firestore rules). " + message);
-                // Revert cooldown on failure
                 localStorage.removeItem("lastPixelPlacedAt");
                 window.dispatchEvent(new Event("pixelPlaced"));
             }
