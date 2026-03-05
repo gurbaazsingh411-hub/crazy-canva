@@ -170,18 +170,26 @@ export default function InfiniteCanvas() {
         return () => cancelAnimationFrame(animationFrameId);
     }, [draw]);
 
-    // Event Handlers
-    const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-        e.preventDefault();
-        const zoomSensitivity = 0.001;
-        const delta = -e.deltaY * zoomSensitivity;
+    // Attach wheel listener with passive: false manually to allow preventDefault
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
 
-        setTransform((prev: typeof transform) => {
-            let newScale = prev.scale * Math.exp(delta);
-            newScale = Math.max(0.1, Math.min(15, newScale));
-            return { ...prev, scale: newScale };
-        });
-    };
+        const handleWheelRaw = (e: WheelEvent) => {
+            e.preventDefault();
+            const zoomSensitivity = 0.001;
+            const delta = -e.deltaY * zoomSensitivity;
+
+            setTransform((prev: typeof transform) => {
+                let newScale = prev.scale * Math.exp(delta);
+                newScale = Math.max(0.1, Math.min(15, newScale));
+                return { ...prev, scale: newScale };
+            });
+        };
+
+        canvas.addEventListener("wheel", handleWheelRaw, { passive: false });
+        return () => canvas.removeEventListener("wheel", handleWheelRaw);
+    }, [transform]);
 
     const handlePointerDown = async (e: React.PointerEvent<HTMLCanvasElement>) => {
         if (e.button === 1 || e.button === 2 || e.shiftKey) {
@@ -250,7 +258,6 @@ export default function InfiniteCanvas() {
         <canvas
             ref={canvasRef}
             className="absolute top-0 left-0 w-full h-full cursor-crosshair touch-none outline-none"
-            onWheel={handleWheel}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={() => setIsDragging(false)}
