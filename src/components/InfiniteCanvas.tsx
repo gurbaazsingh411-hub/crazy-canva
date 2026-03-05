@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useCanvasStore, PixelData } from "@/store/useCanvasStore";
 import { COOLDOWN_MS } from "@/components/CooldownTimer";
 import { db } from "@/lib/firebase";
@@ -11,12 +11,25 @@ const PIXEL_SIZE = 15; // Slightly larger for better mobile/desktop balance
 export default function InfiniteCanvas() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    // Transform state: [x, y, scale]
-    const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+    // Transform state: [x, y, scale] - Persisted to localStorage
+    const [transform, setTransform] = useState(() => {
+        if (typeof window !== "undefined") {
+            const saved = localStorage.getItem("canvas_transform");
+            if (saved) {
+                try {
+                    return JSON.parse(saved);
+                } catch (e) {
+                    console.error("Failed to parse saved transform", e);
+                }
+            }
+        }
+        return { x: 0, y: 0, scale: 1 };
+    });
+
     const [isDragging, setIsDragging] = useState(false);
     const lastMousePos = useRef({ x: 0, y: 0 });
 
-    const { pixels, selectedColor, updatePixels } = useCanvasStore();
+    const { pixels, selectedColor, applyChanges } = useCanvasStore();
 
     // Track window size for correct bounds querying
     const [windowSize, setWindowSize] = useState({
@@ -30,26 +43,31 @@ export default function InfiniteCanvas() {
         return () => window.removeEventListener("resize", handleResize);
     }, []);
 
+    // Save transform to localStorage
+    useEffect(() => {
+        localStorage.setItem("canvas_transform", JSON.stringify(transform));
+    }, [transform]);
+
     // Track bounds as simple state, updated in a debounced way inside an effect
     const scale = transform.scale;
-    const computedMinX = Math.floor((- (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) - 30;
-    const computedMaxX = Math.ceil((windowSize.width - (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) + 30;
-    const computedMinY = Math.floor((- (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) - 30;
-    const computedMaxY = Math.ceil((windowSize.height - (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) + 30;
+    const computedMinX = Math.floor((- (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) - 50;
+    const computedMaxX = Math.ceil((windowSize.width - (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) + 50;
+    const computedMinY = Math.floor((- (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) - 50;
+    const computedMaxY = Math.ceil((windowSize.height - (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) + 50;
 
     const [bounds, setBounds] = useState({ minX: -50, maxX: 50, minY: -50, maxY: 50 });
 
     useEffect(() => {
-        // use a timeout to ensure we don't set state synchronously during render cycle
         const t = setTimeout(() => {
             setBounds(prev => {
-                if (Math.abs(computedMinX - prev.minX) < 10 && Math.abs(computedMaxX - prev.maxX) < 10 &&
-                    Math.abs(computedMinY - prev.minY) < 10 && Math.abs(computedMaxY - prev.maxY) < 10) {
+                // Only update if change is significant to avoid query spam
+                if (Math.abs(computedMinX - prev.minX) < 15 && Math.abs(computedMaxX - prev.maxX) < 15 &&
+                    Math.abs(computedMinY - prev.minY) < 15 && Math.abs(computedMaxY - prev.maxY) < 15) {
                     return prev;
                 }
                 return { minX: computedMinX, maxX: computedMaxX, minY: computedMinY, maxY: computedMaxY };
             });
-        }, 50);
+        }, 100);
         return () => clearTimeout(t);
     }, [computedMinX, computedMaxX, computedMinY, computedMaxY]);
 
@@ -60,24 +78,27 @@ export default function InfiniteCanvas() {
             collection(db, "pixels"),
             where("x", ">=", minX),
             where("x", "<=", maxX),
-            limit(1000)
+            limit(2000)
         );
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            const newPixels: PixelData[] = [];
-            snapshot.forEach((doc) => {
-                const data = doc.data() as PixelData;
-                if (data.y >= minY && data.y <= maxY) {
-                    newPixels.push(data);
-                }
+            const changes = snapshot.docChanges().map(change => ({
+                type: change.type,
+                data: change.doc.data() as PixelData
+            })).filter(change => {
+                // Manually filter Y in the results
+                return change.data.y >= minY && change.data.y <= maxY;
             });
-            updatePixels(newPixels);
+
+            if (changes.length > 0) {
+                applyChanges(changes);
+            }
         }, (error) => {
             console.error("Firestore Error:", error);
         });
 
         return () => unsubscribe();
-    }, [bounds, updatePixels]);
+    }, [bounds, applyChanges]);
 
     // Draw loop
     const draw = useCallback(() => {
@@ -94,7 +115,7 @@ export default function InfiniteCanvas() {
         }
 
         // Clear background
-        ctx.fillStyle = "#050505"; // Match background
+        ctx.fillStyle = "#050505";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         ctx.save();
@@ -103,9 +124,9 @@ export default function InfiniteCanvas() {
         ctx.scale(transform.scale, transform.scale);
 
         // Render Grid if zoomed in enough
-        if (transform.scale > 0.5) {
-            ctx.strokeStyle = "rgba(0, 255, 65, 0.1)"; // Neon grid line
-            ctx.lineWidth = 1 / transform.scale; // keep line width constant on screen
+        if (transform.scale > 0.45) {
+            ctx.strokeStyle = "rgba(0, 255, 65, 0.08)";
+            ctx.lineWidth = 1 / transform.scale;
 
             const startX = -((canvas.width / 2 + transform.x) / transform.scale);
             const endX = startX + canvas.width / transform.scale;
@@ -113,7 +134,6 @@ export default function InfiniteCanvas() {
             const endY = startY + canvas.height / transform.scale;
 
             const GRID_STEP = PIXEL_SIZE;
-
             const firstXLine = Math.floor(startX / GRID_STEP) * GRID_STEP;
             const firstYLine = Math.floor(startY / GRID_STEP) * GRID_STEP;
 
@@ -157,10 +177,7 @@ export default function InfiniteCanvas() {
 
         setTransform(prev => {
             let newScale = prev.scale * Math.exp(delta);
-            // Min limit
-            newScale = Math.max(0.1, newScale);
-            // Max limit
-            newScale = Math.min(10, newScale);
+            newScale = Math.max(0.1, Math.min(15, newScale));
             return { ...prev, scale: newScale };
         });
     };

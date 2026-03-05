@@ -12,18 +12,23 @@ interface CanvasState {
     pixels: Map<string, PixelData>;
     selectedColor: string;
     setSelectedColor: (color: string) => void;
-    updatePixels: (newPixels: PixelData[]) => void;
+    applyChanges: (changes: { type: "added" | "modified" | "removed"; data: PixelData }[]) => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set) => ({
     pixels: new Map(),
     selectedColor: "#00ff41", // Default to neon green
     setSelectedColor: (color: string) => set({ selectedColor: color }),
-    updatePixels: (newPixels: PixelData[]) =>
+    applyChanges: (changes) =>
         set((state) => {
             const newMap = new Map(state.pixels);
-            newPixels.forEach(p => {
-                newMap.set(`${p.x}_${p.y}`, p);
+            changes.forEach(({ type, data }) => {
+                const key = `${data.x}_${data.y}`;
+                if (type === "added" || type === "modified") {
+                    newMap.set(key, data);
+                } else if (type === "removed") {
+                    newMap.delete(key);
+                }
             });
             return { pixels: newMap };
         }),
