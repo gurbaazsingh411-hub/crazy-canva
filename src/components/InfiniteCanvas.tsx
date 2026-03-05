@@ -33,9 +33,21 @@ export default function InfiniteCanvas() {
 
     // Track window size for correct bounds querying
     const [windowSize, setWindowSize] = useState({
-        width: typeof window !== "undefined" ? window.innerWidth : 1000,
-        height: typeof window !== "undefined" ? window.innerHeight : 1000
+        width: typeof window !== "undefined" ? window.innerWidth : 1200,
+        height: typeof window !== "undefined" ? window.innerHeight : 800
     });
+
+    // Helper to calculate bounds from transform and window size
+    const calculateBounds = useCallback((t: typeof transform, w: typeof windowSize) => {
+        const s = t.scale;
+        const minX = Math.floor((- (w.width / 2 + t.x)) / (PIXEL_SIZE * s)) - 60;
+        const maxX = Math.ceil((w.width - (w.width / 2 + t.x)) / (PIXEL_SIZE * s)) + 60;
+        const minY = Math.floor((- (w.height / 2 + t.y)) / (PIXEL_SIZE * s)) - 60;
+        const maxY = Math.ceil((w.height - (w.height / 2 + t.y)) / (PIXEL_SIZE * s)) + 60;
+        return { minX, maxX, minY, maxY };
+    }, []);
+
+    const [bounds, setBounds] = useState(() => calculateBounds(transform, windowSize));
 
     useEffect(() => {
         const handleResize = () => setWindowSize({ width: window.innerWidth, height: window.innerHeight });
@@ -43,33 +55,22 @@ export default function InfiniteCanvas() {
         return () => window.removeEventListener("resize", handleResize);
     }, []);
 
-    // Save transform to localStorage
+    // Save transform and update bounds on move
     useEffect(() => {
         localStorage.setItem("canvas_transform", JSON.stringify(transform));
-    }, [transform]);
 
-    // Track bounds as simple state, updated in a debounced way inside an effect
-    const scale = transform.scale;
-    const computedMinX = Math.floor((- (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) - 50;
-    const computedMaxX = Math.ceil((windowSize.width - (windowSize.width / 2 + transform.x)) / (PIXEL_SIZE * scale)) + 50;
-    const computedMinY = Math.floor((- (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) - 50;
-    const computedMaxY = Math.ceil((windowSize.height - (windowSize.height / 2 + transform.y)) / (PIXEL_SIZE * scale)) + 50;
-
-    const [bounds, setBounds] = useState({ minX: -50, maxX: 50, minY: -50, maxY: 50 });
-
-    useEffect(() => {
-        const t = setTimeout(() => {
-            setBounds(prev => {
-                // Only update if change is significant to avoid query spam
-                if (Math.abs(computedMinX - prev.minX) < 15 && Math.abs(computedMaxX - prev.maxX) < 15 &&
-                    Math.abs(computedMinY - prev.minY) < 15 && Math.abs(computedMaxY - prev.maxY) < 15) {
-                    return prev;
-                }
-                return { minX: computedMinX, maxX: computedMaxX, minY: computedMinY, maxY: computedMaxY };
-            });
-        }, 100);
-        return () => clearTimeout(t);
-    }, [computedMinX, computedMaxX, computedMinY, computedMaxY]);
+        const nextBounds = calculateBounds(transform, windowSize);
+        setBounds(prev => {
+            // Only update query bounds if moved significantly (more than 15 pixels worth)
+            const dx = Math.abs(nextBounds.minX - prev.minX);
+            const dy = Math.abs(nextBounds.minY - prev.minY);
+            // We should also update if the scale changed significantly
+            if (dx > 20 || dy > 20 || Math.abs(nextBounds.maxX - prev.maxX) > 20) {
+                return nextBounds;
+            }
+            return prev;
+        });
+    }, [transform, windowSize, calculateBounds]);
 
     useEffect(() => {
         const { minX, maxX, minY, maxY } = bounds;
@@ -78,7 +79,7 @@ export default function InfiniteCanvas() {
             collection(db, "pixels"),
             where("x", ">=", minX),
             where("x", "<=", maxX),
-            limit(2000)
+            limit(5000)
         );
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -86,7 +87,7 @@ export default function InfiniteCanvas() {
                 type: change.type,
                 data: change.doc.data() as PixelData
             })).filter(change => {
-                // Manually filter Y in the results
+                // Manual filtering for Y axis in current view
                 return change.data.y >= minY && change.data.y <= maxY;
             });
 
@@ -94,7 +95,7 @@ export default function InfiniteCanvas() {
                 applyChanges(changes);
             }
         }, (error) => {
-            console.error("Firestore Error:", error);
+            console.error("Firestore Sync Error:", error);
         });
 
         return () => unsubscribe();
@@ -175,7 +176,7 @@ export default function InfiniteCanvas() {
         const zoomSensitivity = 0.001;
         const delta = -e.deltaY * zoomSensitivity;
 
-        setTransform(prev => {
+        setTransform((prev: typeof transform) => {
             let newScale = prev.scale * Math.exp(delta);
             newScale = Math.max(0.1, Math.min(15, newScale));
             return { ...prev, scale: newScale };
@@ -235,7 +236,7 @@ export default function InfiniteCanvas() {
             const dx = e.clientX - lastMousePos.current.x;
             const dy = e.clientY - lastMousePos.current.y;
 
-            setTransform(prev => ({
+            setTransform((prev: typeof transform) => ({
                 ...prev,
                 x: prev.x + dx,
                 y: prev.y + dy,

@@ -14,8 +14,20 @@ const firebaseConfig = {
 
 // Initialize Firebase only if config is present and app isn't already initialized
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-
 const db = getFirestore(app);
+
+// Enable offline persistence if in browser
+if (typeof window !== "undefined") {
+    import("firebase/firestore").then(({ enableIndexedDbPersistence }) => {
+        enableIndexedDbPersistence(db).catch((err) => {
+            if (err.code === "failed-precondition") {
+                console.warn("Firestore persistence failed (multiple tabs open)");
+            } else if (err.code === "unimplemented") {
+                console.warn("Firestore persistence not supported by browser");
+            }
+        });
+    });
+}
 
 // Analytics is only available in the browser
 if (typeof window !== 'undefined') {
